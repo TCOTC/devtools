@@ -3,8 +3,10 @@ import {
     existsSync,
     mkdirSync,
     readFileSync,
+    rmSync,
     writeFileSync,
 } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import process from "node:process";
 import {fileURLToPath} from "node:url";
@@ -53,18 +55,46 @@ if (ifNeeded && existsSync(distJs) && existsSync(distDts) && stampMatches) {
 }
 
 // 官方仓库按 npm 扁平 node_modules 编写，未声明 terser-webpack-plugin、部分 Babel 插件等。
-// 在子模块内独立安装并 hoist，避免污染插件 workspace，同时让这些隐式依赖可被解析。
+// 在子模块内独立安装并用 --shamefully-hoist，避免污染插件 workspace，同时让 Babel 等隐式插件可被解析。
 run("pnpm", [
     "--dir",
     vconsoleDir,
     "--ignore-workspace",
     "install",
-    "--config.shamefully-hoist=true",
-    "--config.lockfile=false",
-    "--config.strict-dep-builds=false",
+    "--shamefully-hoist",
+    "--no-lockfile",
     "--ignore-scripts",
 ]);
-run("pnpm", ["--dir", vconsoleDir, "--ignore-workspace", "run", "build"]);
-run("pnpm", ["--dir", vconsoleDir, "--ignore-workspace", "run", "build:typings"]);
+
+// webpack 5.109 起改用 minimizer-webpack-plugin，不再带上 terser-webpack-plugin。
+// 官方配置仍 require 旧包名，另装一份到临时目录，经 NODE_PATH 暴露，不改子模块 package.json。
+const extraDir = path.join(os.tmpdir(), `devtools-vconsole-extra-${process.pid}`);
+mkdirSync(extraDir, {recursive: true});
+writeFileSync(
+    path.join(extraDir, "package.json"),
+    `${JSON.stringify({
+        name: "devtools-vconsole-extra",
+        private: true,
+        dependencies: {
+            "terser-webpack-plugin": "^5.3.14",
+        },
+    }, null, 4)}\n`,
+);
+const originalNodePath = process.env.NODE_PATH;
+try {
+    run("pnpm", ["--dir", extraDir, "--ignore-workspace", "install", "--ignore-scripts"]);
+    process.env.NODE_PATH = [path.join(extraDir, "node_modules"), originalNodePath]
+        .filter(Boolean)
+        .join(path.delimiter);
+    run("pnpm", ["--dir", vconsoleDir, "--ignore-workspace", "run", "build"]);
+    run("pnpm", ["--dir", vconsoleDir, "--ignore-workspace", "run", "build:typings"]);
+} finally {
+    if (originalNodePath === undefined) {
+        delete process.env.NODE_PATH;
+    } else {
+        process.env.NODE_PATH = originalNodePath;
+    }
+    rmSync(extraDir, {recursive: true, force: true});
+}
 mkdirSync(distDir, {recursive: true});
 writeFileSync(stampFile, `${revision}\n`);
