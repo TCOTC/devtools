@@ -28,4 +28,4 @@ These actions are also registered as commands. Bind shortcuts in **Settings → 
 | Reload the window | ✓ | ✓ | ✓ |
 | Open plugin directory | ✓ | — | — |
 | Open plugin storage directory | ✓ | — | — |
-| Developer tools | System DevTools | — | vConsole |
+| Developer tools | Client built-in DevTools | — | vConsole |
