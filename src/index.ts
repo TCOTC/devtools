@@ -21,6 +21,13 @@ const PLUGIN_STORAGE_DIR_API_PATH = "/data/storage/petal";
 /** 日志与网络记录默认上限为 1000，这里加倍 */
 const VCONSOLE_MAX_ITEM_NUMBER = 2000;
 
+/** 顶栏按钮稳定 id，供 addTopBar / removeTopBar 使用 */
+const TOP_BAR_ID = {
+    desktop: "desktop",
+    reloadUI: "reloadUI",
+    toggleDevTools: "toggleDevTools",
+} as const;
+
 type FeatureKey = "reloadUI" | "openPluginDir" | "openPluginStorageDir" | "toggleDevTools";
 
 interface PluginConfig {
@@ -172,9 +179,6 @@ export default class DevToolsPlugin extends Plugin {
     private isMobile = false;
     private isDesktopClient = false;
     private config: PluginConfig = {...DEFAULT_CONFIG};
-    private desktopTopBar?: HTMLElement;
-    private mobileReloadTopBar?: HTMLElement;
-    private mobileDevToolsTopBar?: HTMLElement;
 
     async onload() {
         this.isMobile = isMobileFrontend();
@@ -346,17 +350,12 @@ export default class DevToolsPlugin extends Plugin {
         }
     }
 
-    // TODO: 待思源提供 addTopBar 的 id 与 removeTopBar 后，按稳定 id 添加/移除，不再用 fn__none 显隐，否则顶栏融合时的 margin-right 不会自动更新。https://github.com/siyuan-note/siyuan/issues/18911
-    private syncTopBarElement(existing: HTMLElement | undefined, visible: boolean, create: () => HTMLElement) {
+    private syncTopBar(id: string, visible: boolean, create: () => void) {
         if (visible) {
-            if (!existing) {
-                return create();
-            }
-            existing.classList.remove("fn__none");
-            return existing;
+            create();
+            return;
         }
-        existing?.classList.add("fn__none");
-        return existing;
+        this.removeTopBar(id);
     }
 
     private syncTopBars() {
@@ -365,12 +364,12 @@ export default class DevToolsPlugin extends Plugin {
         }
 
         if (this.isMobile) {
-            this.mobileReloadTopBar = this.syncTopBarElement(
-                this.mobileReloadTopBar,
+            this.syncTopBar(
+                TOP_BAR_ID.reloadUI,
                 this.isFeatureActive("reloadUI"),
                 () =>
-                    // TODO: 为 addTopBar 传入稳定 id
                     this.addTopBar({
+                        id: TOP_BAR_ID.reloadUI,
                         icon: "iconRefresh",
                         title: this.i18n.reloadUI,
                         callback: () => {
@@ -378,12 +377,12 @@ export default class DevToolsPlugin extends Plugin {
                         },
                     }),
             );
-            this.mobileDevToolsTopBar = this.syncTopBarElement(
-                this.mobileDevToolsTopBar,
+            this.syncTopBar(
+                TOP_BAR_ID.toggleDevTools,
                 this.isFeatureActive("toggleDevTools"),
                 () =>
-                    // TODO: 为 addTopBar 传入稳定 id
                     this.addTopBar({
+                        id: TOP_BAR_ID.toggleDevTools,
                         icon: "iconBug",
                         title: this.i18n.toggleDevTools,
                         callback: () => {
@@ -394,12 +393,12 @@ export default class DevToolsPlugin extends Plugin {
             return;
         }
 
-        this.desktopTopBar = this.syncTopBarElement(
-            this.desktopTopBar,
+        this.syncTopBar(
+            TOP_BAR_ID.desktop,
             this.hasActiveFeature(),
             () => {
-                // TODO: 为 addTopBar 传入稳定 id
                 const topBarElement = this.addTopBar({
+                    id: TOP_BAR_ID.desktop,
                     icon: "iconBug",
                     title: this.displayName,
                     position: "right",
@@ -407,7 +406,6 @@ export default class DevToolsPlugin extends Plugin {
                         this.openMenu(this.getTopBarRect(topBarElement));
                     },
                 });
-                return topBarElement;
             },
         );
     }
