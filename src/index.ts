@@ -15,11 +15,21 @@ const PLUGIN_DIR_API_PATH = "/data/plugins";
 /** 工作区文件 API 中的插件存储目录 */
 const PLUGIN_STORAGE_DIR_API_PATH = "/data/storage/petal";
 
+/** 日志与网络记录默认上限为 1000，这里加倍 */
+const VCONSOLE_MAX_ITEM_NUMBER = 2000;
+
 let vConsoleInstance: VConsole | undefined;
+/** 右下角绿色开关按钮是否可见 */
+let vConsoleSwitchVisible = false;
 
 const isMobileFrontend = () => {
     const frontend = getFrontend();
     return frontend === "mobile" || frontend === "browser-mobile";
+};
+
+const isDesktopClientFrontend = () => {
+    const frontend = getFrontend();
+    return frontend === "desktop" || frontend === "desktop-window";
 };
 
 const joinDataPath = (...segments: string[]): string => {
@@ -75,27 +85,44 @@ const openLocalPath = async (filePath: string, fallbackMessage: string): Promise
     showMessage(`${fallbackMessage}\n${filePath}`);
 };
 
-const openVConsole = () => {
-    if (vConsoleInstance) {
-        vConsoleInstance.show();
+const toggleVConsoleSwitch = () => {
+    if (!vConsoleInstance) {
+        const theme = window.siyuan.config.appearance.mode === 1 ? "dark" : "light";
+        vConsoleInstance = new VConsole({
+            theme,
+            pluginOrder: ["default", "element", "network", "storage", "system"],
+            disableLogScrolling: true,
+            log: {maxLogNumber: VCONSOLE_MAX_ITEM_NUMBER},
+            network: {maxNetworkNumber: VCONSOLE_MAX_ITEM_NUMBER},
+        });
+        vConsoleSwitchVisible = true;
         return;
     }
-    const theme = window.siyuan.config.appearance.mode === 1 ? "dark" : "light";
-    vConsoleInstance = new VConsole({theme});
+    if (vConsoleSwitchVisible) {
+        vConsoleInstance.hideSwitch();
+        vConsoleInstance.hide();
+        vConsoleSwitchVisible = false;
+        return;
+    }
+    vConsoleInstance.showSwitch();
+    vConsoleSwitchVisible = true;
 };
 
 const destroyVConsole = () => {
     vConsoleInstance?.destroy();
     vConsoleInstance = undefined;
+    vConsoleSwitchVisible = false;
 };
 
 export default class DevToolsPlugin extends Plugin {
     declare i18n: typeof zhCN;
 
     private isMobile = false;
+    private isDesktopClient = false;
 
     onload() {
         this.isMobile = isMobileFrontend();
+        this.isDesktopClient = isDesktopClientFrontend();
         this.registerCommands();
 
         console.log(this.displayName, "plugin loaded");
@@ -121,7 +148,7 @@ export default class DevToolsPlugin extends Plugin {
                 this.reloadUI();
             },
         });
-        if (!this.isMobile) {
+        if (this.isDesktopClient) {
             this.addCommand({
                 langKey: "openPluginDir",
                 hotkey: "",
@@ -137,13 +164,22 @@ export default class DevToolsPlugin extends Plugin {
                 },
             });
         }
+        if (!this.isMobile) {
+            this.addCommand({
+                langKey: "toggleDevTools",
+                hotkey: "",
+                callback: () => {
+                    this.toggleDevTools();
+                },
+            });
+        }
         // 移动端开发者工具只在移动端注册
         if (this.isMobile) {
             this.addCommand({
-                langKey: "openVConsole",
+                langKey: "toggleDevTools",
                 hotkey: "",
                 callback: () => {
-                    openVConsole();
+                    toggleVConsoleSwitch();
                 },
             });
         }
@@ -161,9 +197,9 @@ export default class DevToolsPlugin extends Plugin {
             // 单独一个按钮，只在移动端注册
             this.addTopBar({
                 icon: "iconBug",
-                title: this.i18n.openVConsole,
+                title: this.i18n.toggleDevTools,
                 callback: () => {
-                    openVConsole();
+                    toggleVConsoleSwitch();
                 },
             });
             return;
@@ -195,6 +231,15 @@ export default class DevToolsPlugin extends Plugin {
         await openLocalPath(joinDataPath("storage", "petal"), this.i18n.openDirFailed);
     }
 
+    private toggleDevTools() {
+        const electron = getElectron();
+        if (!electron?.ipcRenderer) {
+            showMessage(`${this.displayName}: ${this.i18n.toggleDevToolsFailed}`);
+            return;
+        }
+        electron.ipcRenderer.send(Constants.SIYUAN_CMD, "toggleDevTools");
+    }
+
     private getCommandHotkey(langKey: string) {
         return this.commands.find((item) => item.langKey === langKey)?.customHotkey;
     }
@@ -220,20 +265,30 @@ export default class DevToolsPlugin extends Plugin {
                 this.reloadUI();
             },
         });
+        if (this.isDesktopClient) {
+            menu.addItem({
+                icon: "iconFolder",
+                label: this.i18n.openPluginDir,
+                accelerator: this.getCommandHotkey("openPluginDir"),
+                click: () => {
+                    void this.openPluginDir();
+                },
+            });
+            menu.addItem({
+                icon: "iconDatabase",
+                label: this.i18n.openPluginStorageDir,
+                accelerator: this.getCommandHotkey("openPluginStorageDir"),
+                click: () => {
+                    void this.openPluginStorageDir();
+                },
+            });
+        }
         menu.addItem({
-            icon: "iconFolder",
-            label: this.i18n.openPluginDir,
-            accelerator: this.getCommandHotkey("openPluginDir"),
+            icon: "iconBug",
+            label: this.i18n.toggleDevTools,
+            accelerator: this.getCommandHotkey("toggleDevTools"),
             click: () => {
-                void this.openPluginDir();
-            },
-        });
-        menu.addItem({
-            icon: "iconDatabase",
-            label: this.i18n.openPluginStorageDir,
-            accelerator: this.getCommandHotkey("openPluginStorageDir"),
-            click: () => {
-                void this.openPluginStorageDir();
+                this.toggleDevTools();
             },
         });
         menu.open({

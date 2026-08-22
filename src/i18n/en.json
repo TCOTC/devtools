@@ -4,5 +4,6 @@
   "openPluginDir": "Open plugin directory",
   "openPluginStorageDir": "Open plugin storage directory",
   "openDirFailed": "Unable to open the directory in the current environment. The path has been copied if the browser allowed it.",
-  "openVConsole": "Open mobile developer tools"
+  "toggleDevTools": "Toggle developer tools",
+  "toggleDevToolsFailed": "Unable to toggle developer tools in the current environment"
 }

@@ -4,5 +4,6 @@
   "openPluginDir": "打开插件目录",
   "openPluginStorageDir": "打开插件存储目录",
   "openDirFailed": "无法在当前环境打开目录，路径已复制（若浏览器允许）",
-  "openVConsole": "打开移动端开发者工具"
+  "toggleDevTools": "切换开发者工具",
+  "toggleDevToolsFailed": "当前环境无法切换开发者工具"
 }
