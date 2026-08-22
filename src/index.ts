@@ -4,11 +4,14 @@ import {
     getFrontend,
     Menu,
     Plugin,
+    Setting,
     showMessage,
 } from "siyuan";
 import VConsole from "vconsole";
 import type zhCN from "./i18n/zh-CN.json";
 import "./index.scss";
+
+const STORAGE_NAME = "config.json";
 
 /** 工作区文件 API 中的插件目录 */
 const PLUGIN_DIR_API_PATH = "/data/plugins";
@@ -17,6 +20,29 @@ const PLUGIN_STORAGE_DIR_API_PATH = "/data/storage/petal";
 
 /** 日志与网络记录默认上限为 1000，这里加倍 */
 const VCONSOLE_MAX_ITEM_NUMBER = 2000;
+
+type FeatureKey = "reloadUI" | "openPluginDir" | "openPluginStorageDir" | "toggleDevTools";
+
+interface PluginConfig {
+    reloadUI: boolean;
+    openPluginDir: boolean;
+    openPluginStorageDir: boolean;
+    toggleDevTools: boolean;
+}
+
+const DEFAULT_CONFIG: PluginConfig = {
+    reloadUI: true,
+    openPluginDir: true,
+    openPluginStorageDir: true,
+    toggleDevTools: true,
+};
+
+const FEATURE_KEYS: FeatureKey[] = [
+    "reloadUI",
+    "openPluginDir",
+    "openPluginStorageDir",
+    "toggleDevTools",
+];
 
 let vConsoleInstance: VConsole | undefined;
 /** 右下角绿色开关按钮是否可见 */
@@ -30,6 +56,37 @@ const isMobileFrontend = () => {
 const isDesktopClientFrontend = () => {
     const frontend = getFrontend();
     return frontend === "desktop" || frontend === "desktop-window";
+};
+
+const normalizeConfig = (data: unknown): PluginConfig => {
+    const source = typeof data === "object" && data !== null ? data as Partial<PluginConfig> : {};
+    return {
+        reloadUI: typeof source.reloadUI === "boolean" ? source.reloadUI : DEFAULT_CONFIG.reloadUI,
+        openPluginDir: typeof source.openPluginDir === "boolean" ?
+            source.openPluginDir :
+            DEFAULT_CONFIG.openPluginDir,
+        openPluginStorageDir: typeof source.openPluginStorageDir === "boolean" ?
+            source.openPluginStorageDir :
+            DEFAULT_CONFIG.openPluginStorageDir,
+        toggleDevTools: typeof source.toggleDevTools === "boolean" ?
+            source.toggleDevTools :
+            DEFAULT_CONFIG.toggleDevTools,
+    };
+};
+
+const getErrorMsg = (e: unknown) => {
+    if (typeof e === "object" && e !== null && "msg" in e) {
+        return String((e as {msg: unknown;}).msg);
+    }
+    return e instanceof Error ? e.message : String(e);
+};
+
+const createSwitch = (checked: boolean) => {
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.className = "b3-switch fn__flex-center";
+    input.checked = checked;
+    return input;
 };
 
 const joinDataPath = (...segments: string[]): string => {
@@ -77,11 +134,6 @@ const openLocalPath = async (filePath: string, fallbackMessage: string): Promise
             return;
         }
     }
-    try {
-        await navigator.clipboard.writeText(filePath);
-    } catch {
-        // 浏览器可能拒绝剪贴板写入，路径仍会随消息展示
-    }
     showMessage(`${fallbackMessage}\n${filePath}`);
 };
 
@@ -119,19 +171,31 @@ export default class DevToolsPlugin extends Plugin {
 
     private isMobile = false;
     private isDesktopClient = false;
+    private config: PluginConfig = {...DEFAULT_CONFIG};
+    private desktopTopBar?: HTMLElement;
+    private mobileReloadTopBar?: HTMLElement;
+    private mobileDevToolsTopBar?: HTMLElement;
 
-    onload() {
+    async onload() {
         this.isMobile = isMobileFrontend();
         this.isDesktopClient = isDesktopClientFrontend();
+        await this.loadConfig();
+        this.initSetting();
         this.registerCommands();
 
         console.log(this.displayName, "plugin loaded");
     }
 
     onLayoutReady() {
-        this.registerTopBars();
+        this.syncTopBars();
 
         console.log(this.displayName, "plugin layout ready");
+    }
+
+    onDataChanged() {
+        void this.loadConfig().then(() => {
+            this.syncTopBars();
+        });
     }
 
     onunload() {
@@ -140,15 +204,120 @@ export default class DevToolsPlugin extends Plugin {
         console.log(this.displayName, "plugin unloaded");
     }
 
-    private registerCommands() {
-        this.addCommand({
-            langKey: "reloadUI",
-            hotkey: "",
-            callback: () => {
-                this.reloadUI();
+    uninstall() {
+        this.removeData(STORAGE_NAME).catch(e => {
+            const errorMessage = `${this.displayName}: failed to uninstall remove data [${STORAGE_NAME}]: ${
+                getErrorMsg(e)
+            }`;
+            showMessage(errorMessage);
+            console.error(errorMessage);
+        });
+
+        console.log(this.displayName, "plugin uninstalled");
+    }
+
+    private async loadConfig() {
+        try {
+            this.config = normalizeConfig(await this.loadData(STORAGE_NAME));
+            this.data[STORAGE_NAME] = this.config;
+        } catch (e) {
+            const errorMessage = `${this.displayName}: failed to load data [${STORAGE_NAME}]: ${getErrorMsg(e)}`;
+            showMessage(errorMessage);
+            console.error(errorMessage);
+            this.config = {...DEFAULT_CONFIG};
+        }
+    }
+
+    private isFeatureSupported(key: FeatureKey) {
+        switch (key) {
+            case "reloadUI":
+                return true;
+            case "openPluginDir":
+            case "openPluginStorageDir":
+                return this.isDesktopClient;
+            case "toggleDevTools":
+                return this.isDesktopClient || this.isMobile;
+        }
+    }
+
+    private isFeatureActive(key: FeatureKey) {
+        return this.config[key] && this.isFeatureSupported(key);
+    }
+
+    private hasActiveFeature() {
+        return FEATURE_KEYS.some((key) => this.isFeatureActive(key));
+    }
+
+    private ensureFeatureActive(key: FeatureKey) {
+        if (this.isFeatureActive(key)) {
+            return true;
+        }
+        showMessage(`${this.displayName}: ${this.i18n.featureDisabled}`);
+        return false;
+    }
+
+    private initSetting() {
+        const switches = new Map<FeatureKey, HTMLInputElement>();
+
+        this.setting = new Setting({
+            height: "auto",
+            width: "595px",
+            confirmCallback: () => {
+                this.config = {
+                    reloadUI: switches.get("reloadUI")?.checked ?? this.config.reloadUI,
+                    openPluginDir: switches.get("openPluginDir")?.checked ?? this.config.openPluginDir,
+                    openPluginStorageDir: switches.get("openPluginStorageDir")?.checked ??
+                        this.config.openPluginStorageDir,
+                    toggleDevTools: switches.get("toggleDevTools")?.checked ?? this.config.toggleDevTools,
+                };
+                this.data[STORAGE_NAME] = this.config;
+                this.syncTopBars();
+                this.saveData(STORAGE_NAME, this.config).catch(e => {
+                    const errorMessage = `${this.displayName}: failed to save data [${STORAGE_NAME}]: ${
+                        getErrorMsg(e)
+                    }`;
+                    showMessage(errorMessage);
+                    console.error(errorMessage);
+                });
             },
         });
-        if (this.isDesktopClient) {
+
+        const addSwitchItem = (key: FeatureKey, title: string, description: string) => {
+            if (!this.isFeatureSupported(key)) {
+                return;
+            }
+            this.setting.addItem({
+                title,
+                description,
+                createActionElement: () => {
+                    const input = createSwitch(this.config[key]);
+                    switches.set(key, input);
+                    return input;
+                },
+            });
+        };
+
+        addSwitchItem("reloadUI", this.i18n.reloadUI, this.i18n.reloadUIDesc);
+        addSwitchItem("openPluginDir", this.i18n.openPluginDir, this.i18n.openPluginDirDesc);
+        addSwitchItem("openPluginStorageDir", this.i18n.openPluginStorageDir, this.i18n.openPluginStorageDirDesc);
+        addSwitchItem(
+            "toggleDevTools",
+            this.i18n.toggleDevTools,
+            this.isMobile ? this.i18n.toggleDevToolsDescMobile : this.i18n.toggleDevToolsDescDesktop,
+        );
+    }
+
+    private registerCommands() {
+        if (this.isFeatureSupported("reloadUI")) {
+            this.addCommand({
+                langKey: "reloadUI",
+                hotkey: "",
+                callback: () => {
+                    this.reloadUI();
+                },
+            });
+        }
+        if (this.isFeatureSupported("openPluginDir")) {
             this.addCommand({
                 langKey: "openPluginDir",
                 hotkey: "",
@@ -156,6 +325,8 @@ export default class DevToolsPlugin extends Plugin {
                     void this.openPluginDir();
                 },
             });
+        }
+        if (this.isFeatureSupported("openPluginStorageDir")) {
             this.addCommand({
                 langKey: "openPluginStorageDir",
                 hotkey: "",
@@ -164,7 +335,7 @@ export default class DevToolsPlugin extends Plugin {
                 },
             });
         }
-        if (!this.isMobile) {
+        if (this.isFeatureSupported("toggleDevTools")) {
             this.addCommand({
                 langKey: "toggleDevTools",
                 hotkey: "",
@@ -173,65 +344,107 @@ export default class DevToolsPlugin extends Plugin {
                 },
             });
         }
-        // 移动端开发者工具只在移动端注册
-        if (this.isMobile) {
-            this.addCommand({
-                langKey: "toggleDevTools",
-                hotkey: "",
-                callback: () => {
-                    toggleVConsoleSwitch();
-                },
-            });
-        }
     }
 
-    private registerTopBars() {
+    // TODO: 待思源提供 addTopBar 的 id 与 removeTopBar 后，按稳定 id 添加/移除，不再用 fn__none 显隐，否则顶栏融合时的 margin-right 不会自动更新。https://github.com/siyuan-note/siyuan/issues/18911
+    private syncTopBarElement(existing: HTMLElement | undefined, visible: boolean, create: () => HTMLElement) {
+        if (visible) {
+            if (!existing) {
+                return create();
+            }
+            existing.classList.remove("fn__none");
+            return existing;
+        }
+        existing?.classList.add("fn__none");
+        return existing;
+    }
+
+    private syncTopBars() {
+        if (!this.isFeatureActive("toggleDevTools")) {
+            destroyVConsole();
+        }
+
         if (this.isMobile) {
-            this.addTopBar({
-                icon: "iconRefresh",
-                title: this.i18n.reloadUI,
-                callback: () => {
-                    this.reloadUI();
-                },
-            });
-            // 单独一个按钮，只在移动端注册
-            this.addTopBar({
-                icon: "iconBug",
-                title: this.i18n.toggleDevTools,
-                callback: () => {
-                    toggleVConsoleSwitch();
-                },
-            });
+            this.mobileReloadTopBar = this.syncTopBarElement(
+                this.mobileReloadTopBar,
+                this.isFeatureActive("reloadUI"),
+                () =>
+                    // TODO: 为 addTopBar 传入稳定 id
+                    this.addTopBar({
+                        icon: "iconRefresh",
+                        title: this.i18n.reloadUI,
+                        callback: () => {
+                            this.reloadUI();
+                        },
+                    }),
+            );
+            this.mobileDevToolsTopBar = this.syncTopBarElement(
+                this.mobileDevToolsTopBar,
+                this.isFeatureActive("toggleDevTools"),
+                () =>
+                    // TODO: 为 addTopBar 传入稳定 id
+                    this.addTopBar({
+                        icon: "iconBug",
+                        title: this.i18n.toggleDevTools,
+                        callback: () => {
+                            this.toggleDevTools();
+                        },
+                    }),
+            );
             return;
         }
 
-        const topBarElement = this.addTopBar({
-            icon: "iconBug",
-            title: this.displayName,
-            position: "right",
-            callback: () => {
-                this.openMenu(this.getTopBarRect(topBarElement));
+        this.desktopTopBar = this.syncTopBarElement(
+            this.desktopTopBar,
+            this.hasActiveFeature(),
+            () => {
+                // TODO: 为 addTopBar 传入稳定 id
+                const topBarElement = this.addTopBar({
+                    icon: "iconBug",
+                    title: this.displayName,
+                    position: "right",
+                    callback: () => {
+                        this.openMenu(this.getTopBarRect(topBarElement));
+                    },
+                });
+                return topBarElement;
             },
-        });
+        );
     }
 
     private reloadUI() {
+        if (!this.ensureFeatureActive("reloadUI")) {
+            return;
+        }
         fetchPost("/api/ui/reloadUI", {}, undefined, undefined, () => {
             showMessage(`${this.displayName}: ${this.i18n.reloadUIFailed}`);
         });
     }
 
     private async openPluginDir() {
+        if (!this.ensureFeatureActive("openPluginDir")) {
+            return;
+        }
         await ensureWorkspaceDir(PLUGIN_DIR_API_PATH);
         await openLocalPath(joinDataPath("plugins"), this.i18n.openDirFailed);
     }
 
     private async openPluginStorageDir() {
+        if (!this.ensureFeatureActive("openPluginStorageDir")) {
+            return;
+        }
         await ensureWorkspaceDir(PLUGIN_STORAGE_DIR_API_PATH);
         await openLocalPath(joinDataPath("storage", "petal"), this.i18n.openDirFailed);
     }
 
     private toggleDevTools() {
+        if (!this.ensureFeatureActive("toggleDevTools")) {
+            return;
+        }
+        if (this.isMobile) {
+            toggleVConsoleSwitch();
+            return;
+        }
         const electron = getElectron();
         if (!electron?.ipcRenderer) {
             showMessage(`${this.displayName}: ${this.i18n.toggleDevToolsFailed}`);
@@ -257,15 +470,17 @@ export default class DevToolsPlugin extends Plugin {
 
     private openMenu(rect: DOMRect) {
         const menu = new Menu(`${this.name}TopBar`);
-        menu.addItem({
-            icon: "iconRefresh",
-            label: this.i18n.reloadUI,
-            accelerator: this.getCommandHotkey("reloadUI"),
-            click: () => {
-                this.reloadUI();
-            },
-        });
-        if (this.isDesktopClient) {
+        if (this.isFeatureActive("reloadUI")) {
+            menu.addItem({
+                icon: "iconRefresh",
+                label: this.i18n.reloadUI,
+                accelerator: this.getCommandHotkey("reloadUI"),
+                click: () => {
+                    this.reloadUI();
+                },
+            });
+        }
+        if (this.isFeatureActive("openPluginDir")) {
             menu.addItem({
                 icon: "iconFolder",
                 label: this.i18n.openPluginDir,
@@ -274,6 +489,8 @@ export default class DevToolsPlugin extends Plugin {
                     void this.openPluginDir();
                 },
             });
+        }
+        if (this.isFeatureActive("openPluginStorageDir")) {
             menu.addItem({
                 icon: "iconDatabase",
                 label: this.i18n.openPluginStorageDir,
@@ -283,14 +500,19 @@ export default class DevToolsPlugin extends Plugin {
                 },
             });
         }
-        menu.addItem({
-            icon: "iconBug",
-            label: this.i18n.toggleDevTools,
-            accelerator: this.getCommandHotkey("toggleDevTools"),
-            click: () => {
-                this.toggleDevTools();
-            },
-        });
+        if (this.isFeatureActive("toggleDevTools")) {
+            menu.addItem({
+                icon: "iconBug",
+                label: this.i18n.toggleDevTools,
+                accelerator: this.getCommandHotkey("toggleDevTools"),
+                click: () => {
+                    this.toggleDevTools();
+                },
+            });
+        }
+        if (!this.hasActiveFeature()) {
+            return;
+        }
         menu.open({
             x: rect.right,
             y: rect.bottom,

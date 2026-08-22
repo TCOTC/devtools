@@ -12,8 +12,8 @@
     "zh-CN": "开发者工具"
   },
   "description": {
-    "default": "Reload the window, open the plugin directory, open the plugin storage directory, and toggle developer tools (uses vConsole on mobile).",
-    "zh-CN": "支持重载窗口、打开插件目录、打开插件存储目录、切换开发者工具（移动端使用 vConsole）。"
+    "default": "Reload the window, open plugin-related directories, and toggle developer tools (uses vConsole on mobile).",
+    "zh-CN": "支持重载窗口、打开插件相关目录、切换开发者工具（移动端使用 vConsole）。"
   },
   "readme": {
     "default": "README.md",
