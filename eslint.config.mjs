@@ -19,6 +19,7 @@ export default [
         ignores: [
             "dist",
             "node_modules",
+            "vendor",
             "index.js",
         ],
     },

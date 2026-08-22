@@ -1,0 +1,4 @@
+[submodule "vendor/vconsole"]
+	path = vendor/vconsole
+	url = https://github.com/Tencent/vConsole.git
+	branch = dev
